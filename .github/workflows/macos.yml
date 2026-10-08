@@ -1,0 +1,108 @@
+name: macOS
+
+# Every push and pull request: build the app, self-test it from source and as built.
+# A version tag (v1.2.3): also sign with the Developer ID, notarize, and publish the DMG
+# as a GitHub release.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15  # Apple silicon
+    timeout-minutes: 30
+    permissions:
+      contents: write  # to publish releases
+    env:
+      RELEASE: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: packaging/requirements-mac.txt
+
+      - name: Install dependencies
+        run: pip install -r packaging/requirements-mac.txt
+
+      - name: Check the tag matches the app version
+        if: env.RELEASE == 'true'
+        run: |
+          version="$(python -c 'import cardpeek; print(cardpeek.__version__)')"
+          [ "v$version" = "$GITHUB_REF_NAME" ] || { echo "Tag $GITHUB_REF_NAME but cardpeek.__version__ is $version"; exit 1; }
+
+      # The app downloads its OCR models on first launch; cache them so CI doesn't
+      # fetch ~90 MB on every run. The key changes whenever the pinned models do.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cardpeek/models
+          key: ocr-models-${{ hashFiles('cardpeek/core.py') }}
+          restore-keys: ocr-models-
+
+      - name: Self-test from source
+        run: python -m cardpeek --self-test
+
+      - name: Import the signing certificate
+        if: env.RELEASE == 'true'
+        env:
+          CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password="$(uuidgen)"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          echo "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/cert.p12"
+          identity="$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application: .*\)"/\1/p' | head -1)"
+          [ -n "$identity" ] || { echo "No Developer ID Application identity in MACOS_CERT_P12"; exit 1; }
+          echo "CODESIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
+
+      - name: Write the notarization key
+        if: env.RELEASE == 'true'
+        env:
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+        run: |
+          echo "$NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+          echo "NOTARY_KEY=$RUNNER_TEMP/notary.p8" >> "$GITHUB_ENV"
+
+      - name: Build, sign, self-test, package (and notarize on release)
+        env:
+          PYTHON: python
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER }}
+        run: packaging/build_mac.sh
+
+      # Builds from ordinary pushes are ad-hoc signed and kept briefly, for trying out.
+      - uses: actions/upload-artifact@v4
+        if: env.RELEASE != 'true'
+        with:
+          name: CardPeek-macos-${{ github.sha }}
+          path: dist/*.dmg
+          retention-days: 3
+          compression-level: 0  # a DMG is already compressed
+
+      - name: Publish the release
+        if: env.RELEASE == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/*.dmg --title "Card Peek ${GITHUB_REF_NAME#v}" --generate-notes
+
+      - name: Remove the signing keychain
+        if: always() && env.RELEASE == 'true'
+        run: |
+          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
+          rm -f "$RUNNER_TEMP/notary.p8"

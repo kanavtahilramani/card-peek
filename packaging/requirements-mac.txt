@@ -1,0 +1,33 @@
+# Exact versions for macOS builds (CI and packaging/build_mac.sh). Regenerate with:
+#   pip install -r requirements.txt pyinstaller && pip freeze > packaging/requirements-mac.txt
+altgraph==0.17.5
+antlr4-python3-runtime==4.9.3
+certifi==2026.7.22
+charset-normalizer==3.5.2
+colorlog==6.12.0
+flatbuffers==25.12.19
+idna==3.20
+macholib==1.16.4
+mss==10.2.0
+numpy==2.5.3
+omegaconf==2.3.1
+onnxruntime==1.30.0
+opencv-python-headless==5.0.0.93
+packaging==26.3
+pillow==12.3.0
+protobuf==7.36.2
+pyclipper==1.4.0
+pyinstaller==6.22.3
+pyinstaller-hooks-contrib==2026.8
+pyobjc-core==12.2.2
+pyobjc-framework-Cocoa==12.2.2
+pyobjc-framework-ServiceManagement==12.2.2
+PyYAML==6.0.3
+RapidFuzz==3.14.6
+rapidocr==3.10.0
+requests==2.34.2
+setuptools==84.0.0
+shapely==2.2.0
+six==1.17.0
+tqdm==4.70.1
+urllib3==2.8.0

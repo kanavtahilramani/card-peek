@@ -1,8 +1,10 @@
+# What Card Peek needs to run. Exact versions for builds are pinned in requirements-lock.txt.
 mss>=9.0
-pillow>=10.0
+pillow>=10.1
 numpy
 rapidfuzz>=3.0
 requests>=2.31
-rapidocr>=3.0
+rapidocr>=3.10,<3.11
 onnxruntime>=1.17
 pyobjc-framework-Cocoa>=10.0; sys_platform == "darwin"
+pyobjc-framework-ServiceManagement>=10.0; sys_platform == "darwin"
