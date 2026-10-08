@@ -1,0 +1,8 @@
+mss>=9.0
+pillow>=10.0
+numpy
+rapidfuzz>=3.0
+requests>=2.31
+rapidocr>=3.0
+onnxruntime>=1.17
+pyobjc-framework-Cocoa>=10.0; sys_platform == "darwin"

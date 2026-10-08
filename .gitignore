@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Downloaded at runtime. Card Peek keeps these in ~/.cardpeek, but never commit them
+# if a cache or model ends up in the repo.
+.cardpeek/
+images/
+sets/
+debug/
+*.onnx
+*.jpg
+*.png
+
+.DS_Store
