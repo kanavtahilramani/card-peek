@@ -23,7 +23,7 @@ DMG="dist/CardPeek-$VERSION.dmg"
 
 echo "==> Building Card Peek $VERSION"
 rm -rf build/CardPeek "$APP" "$DMG"
-"$PYTHON" -m PyInstaller --noconfirm --clean --log-level WARN --distpath dist --workpath build packaging/CardPeek.spec
+"$PYTHON" -m PyInstaller --noconfirm --clean --log-level WARN --distpath dist --workpath build packaging/CardPeek-mac.spec
 
 echo "==> Signing as: $IDENTITY"
 packaging/sign_mac.sh "$APP" "$IDENTITY" > build/sign.log 2>&1 || { cat build/sign.log; exit 1; }

@@ -1,4 +1,5 @@
-# What Card Peek needs to run. Exact versions for builds are pinned in requirements-lock.txt.
+# What Card Peek needs to run. Exact versions for builds are pinned in packaging/requirements-mac.txt
+# and packaging/requirements-windows.txt.
 mss>=9.0
 pillow>=10.1
 numpy

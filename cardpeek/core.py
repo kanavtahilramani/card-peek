@@ -45,12 +45,21 @@ FROZEN = getattr(sys, "frozen", False)  # running from the packaged app
 
 
 def enable_dpi_awareness() -> None:
-    """On Windows, work in real pixels so the pointer, screen grabs and popup all agree.
+    """On Windows, work in real pixels so the pointer, screen grabs and popup all agree on
+    every monitor. Per-monitor v2 awareness also keeps the tray menu and dialogs sharp
+    on monitors with different scaling.
 
     This has to happen before Tk or mss create any windows.
     """
     if not IS_WINDOWS:
         return
+    try:
+        set_context = ctypes.windll.user32.SetProcessDpiAwarenessContext
+        set_context.argtypes = [ctypes.c_void_p]
+        if set_context(ctypes.c_void_p(-4)):  # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+            return
+    except Exception:
+        pass
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(2)  # per-monitor aware
     except Exception:
@@ -64,7 +73,12 @@ enable_dpi_awareness()
 
 import mss  # noqa: E402  (must come after the DPI call)
 
-APP_DIR = Path.home() / ".cardpeek"
+# Downloads, settings and the log. On Windows that's the per-user app data folder meant
+# for it (%LOCALAPPDATA%, which isn't copied between PCs); elsewhere ~/.cardpeek.
+if IS_WINDOWS and os.environ.get("LOCALAPPDATA"):
+    APP_DIR = Path(os.environ["LOCALAPPDATA"]) / "CardPeek"
+else:
+    APP_DIR = Path.home() / ".cardpeek"
 SCRYFALL = "https://api.scryfall.com"
 HEADERS = {"User-Agent": f"CardPeek/{__version__} (local stream overlay)", "Accept": "application/json"}
 DEFAULT_SET = "fra"  # Reality Fracture
@@ -87,6 +101,20 @@ if IS_MAC:
         _mss_darwin.IMAGE_OPTIONS &= ~_mss_darwin.kCGWindowImageNominalResolution
     except (ImportError, AttributeError):
         pass
+
+if IS_WINDOWS:
+    # mss grabs with CAPTUREBLT, which makes the pointer flicker on every grab. The desktop
+    # is always composited since Windows 8, so grabs include every window without it.
+    try:
+        from mss.windows import gdi as _mss_gdi
+        _mss_gdi.CAPTUREBLT = 0
+    except (ImportError, AttributeError):
+        pass
+
+# Choices offered in the menus.
+CARD_SIZES = [0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0]
+POPUP_SIZES = [40, 50, 55, 65, 75, 85]
+HOVER_DELAYS = [(0.08, "Quick"), (0.12, "Normal"), (0.25, "Relaxed")]
 
 
 logger = logging.getLogger("cardpeek")
@@ -980,9 +1008,9 @@ class Controller:
         self.scryfall = scryfall
         self.on_change = on_change
         self.popup = None                      # set by the UI: .show(key, img, x, y, w, h), .hide()
-        self.pointer = lambda: (-1, -1)        # set by the UI: pointer in screen coordinates
+        self.pointer = lambda: None            # set by the UI: (x, y) in screen coordinates, or None
         self.ignore_point = lambda x, y: False  # set by the UI: e.g. over its own window
-        self.sct = mss.MSS() if hasattr(mss, "MSS") else mss.mss()
+        self.sct = self._new_mss()
         self.use_screencapture = False
         self.jobs: queue.Queue = queue.Queue()
         self.out: queue.Queue = queue.Queue()
@@ -1076,6 +1104,15 @@ class Controller:
 
     # ---- screen geometry
 
+    @staticmethod
+    def _new_mss():
+        return mss.MSS() if hasattr(mss, "MSS") else mss.mss()
+
+    def screens_changed(self):
+        """Pick up monitors that were added, removed or rearranged: mss only looks once."""
+        old, self.sct = self.sct, self._new_mss()
+        old.close()
+
     def monitor_at(self, x, y):
         for m in self.sct.monitors[1:]:
             if m["left"] <= x < m["left"] + m["width"] and m["top"] <= y < m["top"] + m["height"]:
@@ -1130,9 +1167,10 @@ class Controller:
             logger.exception("Tick failed")
 
     def _track_pointer(self):
-        x, y = self.pointer()
-        if x < 0 and y < 0:
+        p = self.pointer()
+        if p is None:
             return
+        x, y = p
         self.worker.pointer = (x, y)
         now = time.monotonic()
         if abs(x - self.last_pos[0]) + abs(y - self.last_pos[1]) > 3:
@@ -1256,8 +1294,8 @@ class Controller:
             return
         self._set_last(f'{res.hit.name}: read "{res.hit.text}", {min(res.hit.score, 100):.0f}% match, '
                        f'in {res.seconds:.1f}s.')
-        x, y = self.pointer()
-        if not self.settings["enabled"] or not inside(res.rect, x, y):
+        p = self.pointer()
+        if not self.settings["enabled"] or p is None or not inside(res.rect, *p):
             return  # the pointer has moved on to something else
         if self.shown and self.shown["name"] == res.hit.name:
             self.shown["rect"] = res.rect

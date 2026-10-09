@@ -1,7 +1,6 @@
-"""Card Peek's control window for Windows and Linux (and macOS with CARDPEEK_UI=tk).
-
-A stand-in until those platforms get a tray app like the macOS menu bar one; it offers
-the same settings in a small window.
+"""Card Peek in Tk: the card popup and stream area picker the Windows tray app uses, and a
+small control window with the same settings for Linux (and for Windows or macOS with
+CARDPEEK_UI=tk).
 """
 from __future__ import annotations
 
@@ -13,9 +12,31 @@ from PIL import Image, ImageTk
 
 from .core import APP_DIR, IS_MAC, IS_WINDOWS, Controller, Scryfall, Settings, inside, log
 
+if IS_WINDOWS:
+    from ctypes import wintypes as wt
+
+    _user32 = ctypes.WinDLL("user32", use_last_error=True)
+    _user32.GetParent.argtypes = [wt.HWND]
+    _user32.GetParent.restype = wt.HWND
+    _user32.GetWindowLongW.argtypes = [wt.HWND, ctypes.c_int]
+    _user32.GetWindowLongW.restype = wt.LONG
+    _user32.SetWindowLongW.argtypes = [wt.HWND, ctypes.c_int, wt.LONG]
+    _user32.SetWindowLongW.restype = wt.LONG
+    _user32.SetLayeredWindowAttributes.argtypes = [wt.HWND, wt.COLORREF, wt.BYTE, wt.DWORD]
+    _user32.SetLayeredWindowAttributes.restype = wt.BOOL
+    _user32.SetWindowPos.argtypes = [wt.HWND, wt.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                     wt.UINT]
+    _user32.SetWindowPos.restype = wt.BOOL
+
+    GWL_EXSTYLE = -20
+    WS_EX_TRANSPARENT, WS_EX_TOOLWINDOW, WS_EX_LAYERED, WS_EX_NOACTIVATE = 0x20, 0x80, 0x80000, 0x08000000
+    HWND_TOPMOST = wt.HWND(-1)
+    SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE = 0x1, 0x2, 0x10
+
 
 class TkPopup:
-    """Borderless, always-on-top Tk window holding the card image."""
+    """Borderless, always-on-top Tk window holding the card image. On Windows it never
+    takes focus and lets clicks through, like the macOS popup."""
 
     def __init__(self, root: tk.Tk):
         p = tk.Toplevel(root)
@@ -26,6 +47,7 @@ class TkPopup:
         self.label.pack()
         self.win = p
         self.photos: dict = {}
+        self.hwnd = None
         if IS_MAC:
             p.withdraw()
         else:
@@ -35,12 +57,16 @@ class TkPopup:
             p.update_idletasks()
         if IS_WINDOWS:
             try:
-                hwnd = ctypes.windll.user32.GetParent(p.winfo_id())
-                style = ctypes.windll.user32.GetWindowLongW(hwnd, -20)  # GWL_EXSTYLE
-                # WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW: never focused, not in Alt-Tab
-                ctypes.windll.user32.SetWindowLongW(hwnd, -20, style | 0x08000000 | 0x00000080)
-            except Exception:
-                pass
+                self.hwnd = _user32.GetParent(p.winfo_id())
+                style = _user32.GetWindowLongW(self.hwnd, GWL_EXSTYLE)
+                # Never focused, not in Alt-Tab, and click-through. A layered window shows
+                # only once its opacity is set.
+                _user32.SetWindowLongW(self.hwnd, GWL_EXSTYLE, style | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW
+                                       | WS_EX_LAYERED | WS_EX_TRANSPARENT)
+                _user32.SetLayeredWindowAttributes(self.hwnd, 0, 255, 2)  # LWA_ALPHA, fully opaque
+            except Exception as e:
+                log(f"Couldn't set up the popup window: {e}")
+                self.hwnd = None
 
     def show(self, key, img: Image.Image, x: int, y: int, w: int, h: int):
         k = (key, w, h)
@@ -53,7 +79,11 @@ class TkPopup:
         self.win.update_idletasks()  # apply the move now; Tk can drop it otherwise
         if IS_MAC:
             self.win.deiconify()
-        self.win.lift()
+        if self.hwnd:
+            # Above other always-on-top windows too (Discord's pop-out, the taskbar).
+            _user32.SetWindowPos(self.hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+        else:
+            self.win.lift()
 
     def hide(self):
         if IS_MAC:
@@ -63,6 +93,72 @@ class TkPopup:
             self.win.update_idletasks()
 
 
+HOLE = "#ff00fe"  # on Windows, the selected box is drawn in this colour and shows through
+
+
+def pick_area(root: tk.Tk, monitors, pointer, done) -> tk.Toplevel:
+    """Dim the screens and let the user drag a box around the stream. `monitors` are mss's
+    (the first spans them all). Calls done([left, top, width, height]) in screen pixels,
+    or done(None) if cancelled: Esc, a right click, or a click without dragging.
+    Returns the overlay window."""
+    virt = monitors[0]
+    ov = tk.Toplevel(root)
+    ov.overrideredirect(True)
+    ov.attributes("-topmost", True)
+    try:
+        ov.attributes("-alpha", 0.45)
+    except tk.TclError:
+        pass
+    hole = ""
+    if IS_WINDOWS:
+        try:
+            ov.attributes("-transparentcolor", HOLE)
+            hole = HOLE
+        except tk.TclError:
+            pass
+    ov.geometry(f"{virt['width']}x{virt['height']}+{virt['left']}+{virt['top']}")
+    ov.update_idletasks()
+    cv = tk.Canvas(ov, bg="black", highlightthickness=0, cursor="crosshair")
+    cv.pack(fill="both", expand=True)
+    px, py = pointer or (virt["left"], virt["top"])
+    mon = next((m for m in monitors[1:] if m["left"] <= px < m["left"] + m["width"]
+                and m["top"] <= py < m["top"] + m["height"]), monitors[1])
+    cv.create_text(mon["left"] - virt["left"] + mon["width"] // 2, mon["top"] - virt["top"] + 80,
+                   text="Drag a box around the video stream.   Esc or a click without dragging cancels.",
+                   fill="white", font=("Segoe UI" if IS_WINDOWS else "Helvetica", 20))
+    state = {}
+
+    def finish(area):
+        if not state.get("done"):
+            state["done"] = True
+            ov.destroy()
+            done(area)
+
+    def press(e):
+        state["start"] = (e.x_root, e.y_root)
+        state["rect"] = cv.create_rectangle(e.x, e.y, e.x, e.y, outline="white", width=2, fill=hole)
+
+    def drag(e):
+        if "start" in state:
+            sx, sy = state["start"]
+            cv.coords(state["rect"], sx - virt["left"], sy - virt["top"], e.x, e.y)
+
+    def release(e):
+        if "start" in state:
+            sx, sy = state["start"]
+            w, h = abs(e.x_root - sx), abs(e.y_root - sy)
+            finish([min(sx, e.x_root), min(sy, e.y_root), w, h] if w > 120 and h > 80 else None)
+
+    cv.bind("<ButtonPress-1>", press)
+    cv.bind("<B1-Motion>", drag)
+    cv.bind("<ButtonRelease-1>", release)
+    cv.bind("<ButtonPress-3>", lambda e: finish(None))
+    ov.bind("<Escape>", lambda e: finish(None))
+    ov.protocol("WM_DELETE_WINDOW", lambda: finish(None))
+    ov.focus_force()
+    return ov
+
+
 class App:
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -70,7 +166,7 @@ class App:
         self.c = Controller(self.settings, Scryfall(APP_DIR), self._changed)
         self._build_ui()
         self.c.popup = TkPopup(root)
-        self.c.pointer = root.winfo_pointerxy
+        self.c.pointer = self._pointer
         self.c.ignore_point = self._over_control_window
         self.c.start()
         self.root.after(Controller.TICK_MS, self.tick)
@@ -78,6 +174,10 @@ class App:
     def tick(self):
         self.c.tick()
         self.root.after(Controller.TICK_MS, self.tick)
+
+    def _pointer(self):
+        p = self.root.winfo_pointerxy()
+        return None if p == (-1, -1) else p  # (-1, -1): on another X screen
 
     def _changed(self, what):
         self.status.set(self.c.status)
@@ -191,49 +291,12 @@ class App:
 
     def select_area(self):
         self.c.hide_popup()
-        virt = self.c.sct.monitors[0]
-        ov = tk.Toplevel(self.root)
-        ov.overrideredirect(True)
-        ov.attributes("-topmost", True)
-        try:
-            ov.attributes("-alpha", 0.35)
-        except tk.TclError:
-            pass
-        ov.geometry(f"{virt['width']}x{virt['height']}+{virt['left']}+{virt['top']}")
-        ov.update_idletasks()
-        cv = tk.Canvas(ov, bg="black", highlightthickness=0, cursor="crosshair")
-        cv.pack(fill="both", expand=True)
-        mon = self.c.monitor_at(*self.root.winfo_pointerxy())
-        cv.create_text(mon["left"] - virt["left"] + mon["width"] // 2, mon["top"] - virt["top"] + 60,
-                       text="Drag a box around the video stream. Click without dragging to cancel.",
-                       fill="white", font=("Segoe UI" if IS_WINDOWS else "Helvetica", 20))
-        state = {}
 
-        def press(e):
-            state["start"] = (e.x_root, e.y_root)
-            state["rect"] = cv.create_rectangle(e.x, e.y, e.x, e.y, outline="#4fc3f7", width=3)
-
-        def drag(e):
-            if "start" in state:
-                sx, sy = state["start"]
-                cv.coords(state["rect"], sx - virt["left"], sy - virt["top"], e.x, e.y)
-
-        def release(e):
-            if "start" not in state:
-                return
-            sx, sy = state["start"]
-            l, t = min(sx, e.x_root), min(sy, e.y_root)
-            w, h = abs(e.x_root - sx), abs(e.y_root - sy)
-            ov.destroy()
-            if w > 120 and h > 80:
-                self.c.set_area([l, t, w, h])
+        def done(area):
+            if area:
+                self.c.set_area(area)
                 self._update_area_text()
-
-        cv.bind("<ButtonPress-1>", press)
-        cv.bind("<B1-Motion>", drag)
-        cv.bind("<ButtonRelease-1>", release)
-        ov.bind("<Escape>", lambda e: ov.destroy())
-        ov.focus_force()
+        pick_area(self.root, self.c.sct.monitors, self._pointer(), done)
 
     def clear_area(self):
         self.c.set_area(None)

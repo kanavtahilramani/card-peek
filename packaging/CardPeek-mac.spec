@@ -1,4 +1,4 @@
-# PyInstaller spec for the macOS app: pyinstaller packaging/CardPeek.spec
+# PyInstaller spec for the macOS app: pyinstaller packaging/CardPeek-mac.spec
 # The OCR models are left out on purpose: the app downloads them on first launch.
 import re
 from pathlib import Path

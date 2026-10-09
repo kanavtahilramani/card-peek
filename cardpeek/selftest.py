@@ -1,7 +1,8 @@
 """An end-to-end check that needs no screen, no Scryfall and no real cards: draw a
 made-up MTG Arena board, blur it like a video stream, and run lookups on it through the
 same OCR and name matching the app uses. CI runs it on the packaged app, which catches
-missing libraries or models that a plain import wouldn't.
+missing libraries or models that a plain import wouldn't. On Windows it also puts the
+tray app's UI through its paces (see win.self_test).
 """
 from __future__ import annotations
 
@@ -10,8 +11,8 @@ import time
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-from .core import (CARD_WIDTH_FRACTION, NAME_HEIGHT_FRACTION, Deck, Job, NameMatcher, OCR, SetInfo,
-                   Worker, fetch_models, grab_region, log, pick_card)
+from .core import (CARD_WIDTH_FRACTION, IS_WINDOWS, NAME_HEIGHT_FRACTION, Deck, Job, NameMatcher, OCR,
+                   SetInfo, Worker, fetch_models, grab_region, log, pick_card)
 
 NAMES = ["Serra Angel", "Llanowar Elves", "Way of the Healer", "Way of the Warlord", "Pacifism",
          "Shivan Dragon", "Counterspell", "Giant Growth", "Lightning Strike", "Mind Rot",
@@ -104,6 +105,10 @@ def run() -> int:
     lines = ocr.read(screen.crop((0, 400, 2000, 1400)), lambda box: box, careful=True)
     if ocr.careful and not any(line[1] for line in lines):
         problems.append("the careful detector found no text")
+
+    if IS_WINDOWS:
+        from .win import self_test
+        problems += self_test()
 
     for p in problems:
         log("Problem:", p)
