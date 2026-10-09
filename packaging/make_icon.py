@@ -1,9 +1,12 @@
-"""Draw Card Peek's app icon and write cardpeek/assets/CardPeek.ico (Windows) and
-CardPeek.icns (macOS).
+"""Draw Card Peek's artwork and write:
 
-Two fanned cards on a deep blue tile, with a lens over the front card's name bar: the
-thing Card Peek reads. Run: python packaging/make_icon.py. The .icns needs a Mac
-(iconutil); elsewhere only the .ico is written.
+  cardpeek/assets/CardPeek.ico      Windows app icon
+  cardpeek/assets/CardPeek.icns     macOS app icon (needs iconutil, so a Mac)
+  docs/icon.png                     the icon for README.md
+  packaging/dmg/background*.png     the DMG window's background, 1x and 2x
+
+Two fanned cards on a deep indigo tile, with a lens over the front card's name bar
+magnifying the name: the thing Card Peek reads. Run: python packaging/make_icon.py
 """
 import math
 import shutil
@@ -12,30 +15,81 @@ import sys
 import tempfile
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
 S = 1024
-ASSETS = Path(__file__).resolve().parents[1] / "cardpeek" / "assets"
+ROOT = Path(__file__).resolve().parents[1]
+ASSETS = ROOT / "cardpeek" / "assets"
+
+INK = (24, 22, 30)
 
 
 def lerp(a, b, t):
     return tuple(round(x + (y - x) * t) for x, y in zip(a, b))
 
 
-def card(w, h, frame, bar, art):
-    """A card face, drawn upright at 4x and returned as RGBA."""
+def vgradient(w, h, top, bottom):
+    col = Image.new("RGBA", (1, h))
+    for y in range(h):
+        col.putpixel((0, y), lerp(top, bottom, y / max(1, h - 1)) + (255,))
+    return col.resize((w, h))
+
+
+def rounded_mask(size, box, radius):
+    m = Image.new("L", size, 0)
+    ImageDraw.Draw(m).rounded_rectangle(box, radius=radius, fill=255)
+    return m
+
+
+def shadow(size, box, radius, offset, blur, alpha):
+    s = Image.new("RGBA", size, (0, 0, 0, 0))
+    x0, y0, x1, y1 = box
+    ImageDraw.Draw(s).rounded_rectangle((x0 + offset[0], y0 + offset[1], x1 + offset[0], y1 + offset[1]),
+                                        radius=radius, fill=(8, 6, 24, alpha))
+    return s.filter(ImageFilter.GaussianBlur(blur))
+
+
+def card(w, h, palette):
+    """An upright card face: border, frame, name bar, art, type line, text box."""
+    border, frame, bar, sky, hill, text = palette
     img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
-    r = int(w * 0.07)
-    d.rounded_rectangle((0, 0, w - 1, h - 1), radius=r, fill=frame)
-    m = int(w * 0.06)
-    d.rounded_rectangle((m, m, w - m, m + int(h * 0.1)), radius=int(w * 0.03), fill=bar)
-    d.rectangle((m + 6, m + int(h * 0.13), w - m - 6, int(h * 0.56)), fill=art)
-    d.rounded_rectangle((m, int(h * 0.6), w - m, h - m), radius=int(w * 0.02), fill=lerp(bar, frame, 0.15))
-    for i in range(4):  # rules text
-        y = int(h * (0.66 + i * 0.065))
-        d.rounded_rectangle((m + 20, y, w - m - (90 if i == 3 else 20), y + 16), radius=8, fill=lerp(bar, frame, 0.45))
+    u = w / 100  # card units: the card is 100 wide
+    d.rounded_rectangle((0, 0, w - 1, h - 1), radius=round(5.5 * u), fill=border)
+    d.rounded_rectangle((round(4 * u), round(4 * u), w - round(4 * u), h - round(4 * u)),
+                        radius=round(3 * u), fill=frame)
+
+    def bar_at(y0, y1):
+        d.rounded_rectangle((round(6.5 * u), round(y0 * u), w - round(6.5 * u), round(y1 * u)),
+                            radius=round(2.2 * u), fill=bar)
+
+    bar_at(7, 17)  # name
+    # Art: a sky over hills, so it reads as a picture and not a blank box.
+    ax0, ay0, ax1, ay1 = round(9 * u), round(19.5 * u), w - round(9 * u), round(75 * u)
+    art = vgradient(ax1 - ax0, ay1 - ay0, sky[0], sky[1])
+    ad = ImageDraw.Draw(art)
+    aw, ah = art.size
+    ad.ellipse((aw * 0.62, ah * 0.14, aw * 0.84, ah * 0.14 + aw * 0.22), fill=sky[2])  # sun
+    ad.polygon([(0, ah * 0.72), (aw * 0.3, ah * 0.42), (aw * 0.55, ah * 0.66), (aw * 0.78, ah * 0.5),
+                (aw, ah * 0.64), (aw, ah), (0, ah)], fill=hill[0])
+    ad.polygon([(0, ah * 0.86), (aw * 0.45, ah * 0.7), (aw, ah * 0.84), (aw, ah), (0, ah)], fill=hill[1])
+    img.paste(art, (ax0, ay0))
+    bar_at(77, 86)  # type line
+    d.rounded_rectangle((round(8 * u), round(88 * u), w - round(8 * u), h - round(8 * u)),
+                        radius=round(1.5 * u), fill=text[0])
+    for i, end in enumerate((84, 84, 62)):  # rules text
+        y = (93 + i * 9) * u
+        d.rounded_rectangle((round(13 * u), round(y), round(end * u), round(y + 3.2 * u)),
+                            radius=round(1.6 * u), fill=text[1])
     return img
+
+
+FRONT = ((20, 18, 24), (196, 170, 118), (244, 234, 208),
+         ((92, 160, 214), (190, 222, 236), (255, 236, 176)),
+         ((70, 128, 96), (44, 92, 70)), ((240, 230, 206), (150, 136, 112)))
+BACK = ((26, 26, 40), (98, 106, 150), (176, 184, 214),
+        ((70, 84, 140), (128, 140, 190), (196, 204, 232)),
+        ((56, 64, 112), (42, 48, 90)), ((176, 184, 214), (110, 118, 160)))
 
 
 def draw() -> Image.Image:
@@ -46,44 +100,76 @@ def draw() -> Image.Image:
     # macOS icon grid: an 824 px rounded square centred in 1024, with a soft shadow.
     inset = (n - 824 * k) // 2
     tile = (inset, inset, n - inset, n - inset)
-    shadow = Image.new("RGBA", (n, n), (0, 0, 0, 0))
-    ImageDraw.Draw(shadow).rounded_rectangle((tile[0], tile[1] + 12 * k, tile[2], tile[3] + 12 * k),
-                                             radius=185 * k, fill=(0, 0, 0, 110))
-    img.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(18 * k)))
+    radius = 185 * k
+    img.alpha_composite(shadow((n, n), tile, radius, (0, 10 * k), 16 * k, 120))
+    bg = vgradient(n, n, (84, 70, 196), (22, 18, 64))
+    glow = Image.new("RGBA", (n, n), (0, 0, 0, 0))  # light from the top left
+    ImageDraw.Draw(glow).ellipse((-n * 0.25, -n * 0.45, n * 0.85, n * 0.55), fill=(150, 140, 255, 90))
+    bg.alpha_composite(glow.filter(ImageFilter.GaussianBlur(120 * k)))
+    tile_mask = rounded_mask((n, n), tile, radius)
+    img.paste(bg, (0, 0), tile_mask)
+    # A thin light edge along the top of the tile.
+    edge = Image.new("L", (n, n), 0)
+    ImageDraw.Draw(edge).rounded_rectangle(tile, radius=radius, outline=255, width=3 * k)
+    edge = ImageChops.multiply(edge, vgradient(n, n, (255,) * 3, (0,) * 3).convert("L"))
+    img.alpha_composite(Image.merge("RGBA", (Image.new("L", (n, n), 255),) * 3 + (edge.point(lambda v: v // 3),)))
 
-    grad = Image.new("RGBA", (n, n))
-    gd = ImageDraw.Draw(grad)
-    top, bottom = (58, 76, 160), (17, 22, 52)
-    for y in range(n):
-        gd.line([(0, y), (n, y)], fill=lerp(top, bottom, y / n) + (255,))
-    mask = Image.new("L", (n, n), 0)
-    ImageDraw.Draw(mask).rounded_rectangle(tile, radius=185 * k, fill=255)
-    img.paste(grad, (0, 0), mask)
+    cw = 400 * k
+    ch = round(cw * 88 / 63)
+    cx, cy = n // 2 + 40 * k, n // 2 + 36 * k
 
-    cw, ch = 380 * k, 530 * k
-    back = card(cw, ch, (34, 38, 58), (120, 128, 160), (70, 88, 130)).rotate(14, expand=True, resample=Image.BICUBIC)
-    front = card(cw, ch, (24, 22, 28), (236, 222, 190), (196, 112, 64))
-    cx, cy = n // 2, n // 2 + 30 * k
-    img.alpha_composite(back, (cx - back.width // 2 - 95 * k, cy - back.height // 2 - 20 * k))
-    fs = Image.new("RGBA", (n, n), (0, 0, 0, 0))
-    fx, fy = cx - cw // 2 + 60 * k, cy - ch // 2 + 20 * k
-    ImageDraw.Draw(fs).rounded_rectangle((fx + 6 * k, fy + 14 * k, fx + cw + 6 * k, fy + ch + 14 * k),
-                                         radius=26 * k, fill=(0, 0, 0, 120))
-    img.alpha_composite(fs.filter(ImageFilter.GaussianBlur(14 * k)))
+    # Back card: tilted away to the left.
+    back = card(cw, ch, BACK)
+    pad = 60 * k
+    padded = Image.new("RGBA", (cw + 2 * pad, ch + 2 * pad), (0, 0, 0, 0))
+    padded.alpha_composite(shadow(padded.size, (pad, pad, pad + cw, pad + ch), 22 * k, (0, 10 * k), 18 * k, 130))
+    padded.alpha_composite(back, (pad, pad))
+    padded = padded.rotate(13, resample=Image.BICUBIC, expand=True)
+    img.alpha_composite(padded, (cx - 130 * k - padded.width // 2, cy - 26 * k - padded.height // 2))
+
+    # Front card.
+    front = card(cw, ch, FRONT)
+    fx, fy = cx - cw // 2, cy - ch // 2
+    img.alpha_composite(shadow((n, n), (fx, fy, fx + cw, fy + ch), 22 * k, (0, 18 * k), 24 * k, 150))
     img.alpha_composite(front, (fx, fy))
 
-    # The lens: over the name bar, magnifying a stroke of "text".
-    lx, ly, lr = fx + 120 * k, fy + 70 * k, 120 * k
+    # The lens, over the name bar, really magnifying it, with a name in it.
+    u = cw / 100
+    lx, ly, lr = fx + round(34 * u), fy + round(14 * u), 136 * k
+    zoom = 2.5
+    region = img.crop((round(lx - lr / zoom), round(ly - lr / zoom), round(lx + lr / zoom), round(ly + lr / zoom)))
+    lens = region.resize((2 * lr, 2 * lr), Image.BICUBIC)
+    ld = ImageDraw.Draw(lens)
+    for x0, x1 in ((0.16, 0.50), (0.57, 0.84)):  # a two-word card name
+        ld.rounded_rectangle((x0 * 2 * lr, lr - 15 * k, x1 * 2 * lr, lr + 15 * k), radius=15 * k, fill=INK)
+    glass = Image.new("RGBA", lens.size, (0, 0, 0, 0))  # a glint across the top of the glass
+    ImageDraw.Draw(glass).ellipse((-lr * 0.2, -lr * 0.9, lr * 1.9, lr * 0.85), fill=(255, 255, 255, 60))
+    lens.alpha_composite(glass.filter(ImageFilter.GaussianBlur(10 * k)))
+    circle = Image.new("L", lens.size, 0)
+    ImageDraw.Draw(circle).ellipse((0, 0, 2 * lr - 1, 2 * lr - 1), fill=255)
+
+    # Handle first, so the rim sits on top of it.
+    a = math.radians(48)
+    ring = 26 * k
+    hx0, hy0 = lx + (lr + ring * 0.3) * math.cos(a), ly + (lr + ring * 0.3) * math.sin(a)
+    hx1, hy1 = lx + (lr + 170 * k) * math.cos(a), ly + (lr + 170 * k) * math.sin(a)
+    hs = Image.new("RGBA", (n, n), (0, 0, 0, 0))
+    ImageDraw.Draw(hs).line((hx0, hy0 + 16 * k, hx1, hy1 + 16 * k), fill=(8, 6, 24, 150), width=50 * k)
+    img.alpha_composite(hs.filter(ImageFilter.GaussianBlur(14 * k)))
     d = ImageDraw.Draw(img)
-    d.ellipse((lx - lr, ly - lr, lx + lr, ly + lr), fill=(250, 244, 228, 235))
-    for x0, x1 in ((-88, -12), (8, 84)):  # a two-word card name
-        d.rounded_rectangle((lx + x0 * k, ly - 13 * k, lx + x1 * k, ly + 13 * k), radius=13 * k, fill=(30, 28, 36))
-    d.ellipse((lx - lr, ly - lr, lx + lr, ly + lr), outline=(255, 255, 255), width=22 * k)
-    a = math.radians(45)
-    x0, y0 = lx + (lr + 4 * k) * math.cos(a), ly + (lr + 4 * k) * math.sin(a)
-    x1, y1 = lx + (lr + 150 * k) * math.cos(a), ly + (lr + 150 * k) * math.sin(a)
-    d.line((x0, y0, x1, y1), fill=(255, 255, 255), width=46 * k)
-    d.ellipse((x1 - 23 * k, y1 - 23 * k, x1 + 23 * k, y1 + 23 * k), fill=(255, 255, 255))
+    d.line((hx0, hy0, hx1, hy1), fill=(236, 238, 246), width=50 * k)
+    d.ellipse((hx1 - 25 * k, hy1 - 25 * k, hx1 + 25 * k, hy1 + 25 * k), fill=(236, 238, 246))
+    gx = lx + (lr + 70 * k) * math.cos(a), ly + (lr + 70 * k) * math.sin(a)  # dark grip
+    d.line((*gx, hx1, hy1), fill=(44, 40, 70), width=50 * k)
+    d.ellipse((hx1 - 25 * k, hy1 - 25 * k, hx1 + 25 * k, hy1 + 25 * k), fill=(44, 40, 70))
+
+    ls = Image.new("RGBA", (n, n), (0, 0, 0, 0))
+    ImageDraw.Draw(ls).ellipse((lx - lr - ring, ly - lr - ring + 16 * k, lx + lr + ring, ly + lr + ring + 16 * k),
+                               fill=(8, 6, 24, 140))
+    img.alpha_composite(ls.filter(ImageFilter.GaussianBlur(18 * k)))
+    img.paste(lens, (lx - lr, ly - lr), circle)
+    d.ellipse((lx - lr - ring // 2, ly - lr - ring // 2, lx + lr + ring // 2, ly + lr + ring // 2),
+              outline=(244, 245, 250), width=ring)
     return img.resize((S, S), Image.LANCZOS)
 
 
@@ -111,6 +197,44 @@ def write_icns(icon: Image.Image):
     print("wrote", out)
 
 
+def font(size):
+    for name in ("/System/Library/Fonts/SFNS.ttf", "/System/Library/Fonts/Helvetica.ttc", "segoeui.ttf",
+                 "DejaVuSans.ttf"):
+        try:
+            return ImageFont.truetype(name, size)
+        except OSError:
+            pass
+    return ImageFont.load_default(size)
+
+
+# The DMG window, in points. packaging/dmg_settings.py puts the icons at these places.
+DMG_SIZE = (640, 400)
+DMG_APP, DMG_APPLICATIONS = (170, 190), (470, 190)
+
+
+def write_dmg_background():
+    """A light backdrop with an arrow from the app to Applications and a line saying what
+    to do. Finder draws the icons and their names on top."""
+    out = ROOT / "packaging" / "dmg"
+    out.mkdir(exist_ok=True)
+    for scale, name in ((1, "background.png"), (2, "background@2x.png")):
+        w, h = DMG_SIZE[0] * scale, DMG_SIZE[1] * scale
+        img = vgradient(w, h, (250, 249, 255), (232, 230, 246))
+        d = ImageDraw.Draw(img)
+        y = DMG_APP[1] * scale
+        x0, x1 = (DMG_APP[0] + 80) * scale, (DMG_APPLICATIONS[0] - 80) * scale
+        colour = (132, 122, 196)
+        for x in range(x0, x1 - 24 * scale, 14 * scale):  # dotted shaft
+            d.ellipse((x - 3 * scale, y - 3 * scale, x + 3 * scale, y + 3 * scale), fill=colour)
+        d.polygon([(x1, y), (x1 - 20 * scale, y - 13 * scale), (x1 - 20 * scale, y + 13 * scale)], fill=colour)
+        f = font(15 * scale)
+        text = "Drag Card Peek to Applications"
+        tw = d.textlength(text, font=f)
+        d.text(((w - tw) / 2, 312 * scale), text, font=f, fill=(84, 78, 120))
+        img.convert("RGB").save(out / name, dpi=(72 * scale, 72 * scale))
+        print("wrote", out / name)
+
+
 def main():
     icon = draw()
     if len(sys.argv) > 1:
@@ -120,6 +244,10 @@ def main():
         write_icns(icon)
     else:
         print("skipped CardPeek.icns: needs macOS's iconutil")
+    (ROOT / "docs").mkdir(exist_ok=True)
+    icon.resize((256, 256), Image.LANCZOS).save(ROOT / "docs" / "icon.png", optimize=True)
+    print("wrote", ROOT / "docs" / "icon.png")
+    write_dmg_background()
 
 
 if __name__ == "__main__":

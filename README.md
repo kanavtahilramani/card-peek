@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/icon.png" width="128" height="128" alt=""></p>
+
 # Card Peek
 
 Rest your mouse on a Magic card in a video stream (MTG Arena over Discord, Twitch, YouTube…) and the full card pops up beside it.
@@ -100,4 +102,4 @@ GitHub Actions (`.github/workflows/build.yml`) builds and self-tests both apps o
 
 To release: bump `__version__` in `cardpeek/__init__.py` and commit, then `git tag -a v<version> -m "Card Peek <version>" && git push origin main v<version>`. The release appears on the Releases page about 10 minutes later. The steps are also in `CLAUDE.md`.
 
-App icon: `python packaging/make_icon.py` redraws `cardpeek/assets/CardPeek.ico`, and on a Mac `CardPeek.icns` too.
+Artwork: `python packaging/make_icon.py` redraws the app icon (`cardpeek/assets/CardPeek.ico`, and on a Mac `CardPeek.icns`), `docs/icon.png` for this page, and the DMG window's background in `packaging/dmg/`. `packaging/dmg_settings.py` lays out the DMG window to match.

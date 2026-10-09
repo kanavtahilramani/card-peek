@@ -33,12 +33,11 @@ echo "==> Self-test of the built app"
 "$APP/Contents/MacOS/Card Peek" --self-test
 
 echo "==> Making $DMG"
-rm -rf build/dmg && mkdir -p build/dmg
-cp -R "$APP" build/dmg/
-ln -s /Applications build/dmg/Applications
-# hdiutil now and then fails on a busy CI machine ("Resource busy"), so give it a few goes.
+# dmgbuild lays out the window (packaging/dmg_settings.py) without needing Finder.
+# hdiutil, which it runs, now and then fails on a busy CI machine ("Resource busy"), so give
+# it a few goes.
 for attempt in 1 2 3; do
-    if hdiutil create -volname "Card Peek" -srcfolder build/dmg -fs APFS -format ULMO -ov "$DMG" > build/dmg.log 2>&1; then
+    if "$PYTHON" -m dmgbuild -s packaging/dmg_settings.py -D app="$APP" "Card Peek" "$DMG" > build/dmg.log 2>&1; then
         break
     fi
     cat build/dmg.log
