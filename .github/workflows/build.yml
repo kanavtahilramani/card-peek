@@ -1,8 +1,9 @@
-name: macOS
+name: Build
 
-# Every push and pull request: build the app, self-test it from source and as built.
-# A version tag (v1.2.3): also sign with the Developer ID, notarize, and publish the DMG
-# as a GitHub release.
+# Every push and pull request: build the macOS app and the Windows app, and self-test both,
+# from source and as built. A version tag (v1.2.3): also sign the macOS app with the
+# Developer ID and notarize it, then publish the DMG and the Windows .exe as a GitHub
+# release once both have built.
 on:
   push:
     branches: [main]
@@ -11,17 +12,19 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: macos-${{ github.ref }}
+  group: build-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
+env:
+  RELEASE: ${{ startsWith(github.ref, 'refs/tags/v') }}
+
 jobs:
-  build:
+  macos:
     runs-on: macos-15  # Apple silicon
     timeout-minutes: 30
-    permissions:
-      contents: write  # to publish releases
-    env:
-      RELEASE: ${{ startsWith(github.ref, 'refs/tags/v') }}
     steps:
       - uses: actions/checkout@v4
 
@@ -45,8 +48,8 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/.cardpeek/models
-          key: ocr-models-${{ hashFiles('cardpeek/core.py') }}
-          restore-keys: ocr-models-
+          key: ocr-models-${{ runner.os }}-${{ hashFiles('cardpeek/core.py') }}
+          restore-keys: ocr-models-${{ runner.os }}-
 
       - name: Self-test from source
         run: python -m cardpeek --self-test
@@ -87,22 +90,85 @@ jobs:
         run: packaging/build_mac.sh
 
       # Builds from ordinary pushes are ad-hoc signed and kept briefly, for trying out.
+      # On release, the release job below publishes this one.
       - uses: actions/upload-artifact@v4
-        if: env.RELEASE != 'true'
         with:
           name: CardPeek-macos-${{ github.sha }}
           path: dist/*.dmg
           retention-days: 3
           compression-level: 0  # a DMG is already compressed
 
-      - name: Publish the release
-        if: env.RELEASE == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/*.dmg --title "Card Peek ${GITHUB_REF_NAME#v}" --generate-notes
-
       - name: Remove the signing keychain
         if: always() && env.RELEASE == 'true'
         run: |
           security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
           rm -f "$RUNNER_TEMP/notary.p8"
+
+  windows:
+    runs-on: windows-2025  # x64
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: packaging/requirements-windows.txt
+
+      - name: Install dependencies
+        run: pip install -r packaging/requirements-windows.txt
+
+      - name: Check the tag matches the app version
+        if: env.RELEASE == 'true'
+        run: |
+          $version = python -c "import cardpeek; print(cardpeek.__version__)"
+          if ("v$version" -ne $env:GITHUB_REF_NAME) { throw "Tag $env:GITHUB_REF_NAME but cardpeek.__version__ is $version" }
+
+      # As on macOS: the OCR models the app downloads on first launch.
+      - uses: actions/cache@v4
+        with:
+          path: ~/AppData/Local/CardPeek/models
+          key: ocr-models-${{ runner.os }}-${{ hashFiles('cardpeek/core.py') }}
+          restore-keys: ocr-models-${{ runner.os }}-
+
+      - name: Self-test from source
+        run: python -m cardpeek --self-test
+
+      - name: Build and self-test the .exe
+        env:
+          PYTHON: python
+        run: packaging/build_windows.ps1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CardPeek-windows-${{ github.sha }}
+          path: dist/*.exe
+          retention-days: 3
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: CardPeek-*-${{ github.sha }}
+          merge-multiple: true
+          path: dist
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          ls -l dist
+          [ -f "dist/CardPeek-$version.dmg" ] && [ -f "dist/CardPeek-$version.exe" ] || { echo "Missing a download"; exit 1; }
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "Card Peek $version" \
+            --generate-notes --notes "**Download:** \`CardPeek-$version.dmg\` for macOS (Apple silicon, macOS 14 or later), \`CardPeek-$version.exe\` for Windows (10 or 11, x64). The Windows app isn't code-signed yet, so the first time it runs Windows may say it protected your PC: choose **More info**, then **Run anyway**."

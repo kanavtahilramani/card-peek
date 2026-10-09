@@ -1,9 +1,12 @@
-"""Draw Card Peek's app icon and write cardpeek/assets/CardPeek.icns.
+"""Draw Card Peek's app icon and write cardpeek/assets/CardPeek.ico (Windows) and
+CardPeek.icns (macOS).
 
 Two fanned cards on a deep blue tile, with a lens over the front card's name bar: the
-thing Card Peek reads. Run on a Mac (needs iconutil): python packaging/make_icon.py
+thing Card Peek reads. Run: python packaging/make_icon.py. The .icns needs a Mac
+(iconutil); elsewhere only the .ico is written.
 """
 import math
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -12,7 +15,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFilter
 
 S = 1024
-OUT = Path(__file__).resolve().parents[1] / "cardpeek" / "assets" / "CardPeek.icns"
+ASSETS = Path(__file__).resolve().parents[1] / "cardpeek" / "assets"
 
 
 def lerp(a, b, t):
@@ -84,18 +87,39 @@ def draw() -> Image.Image:
     return img.resize((S, S), Image.LANCZOS)
 
 
-def main():
-    icon = draw()
+def write_ico(icon: Image.Image):
+    """Windows icons fill their square, so crop to the tile, leaving out the margin of the
+    macOS icon grid."""
+    m = (S - 824) // 2 - 12
+    tile = icon.crop((m, m, S - m, S - m))
+    sizes = (16, 20, 24, 32, 40, 48, 64, 128, 256)
+    frames = [tile.resize((s, s), Image.LANCZOS) for s in sizes]
+    out = ASSETS / "CardPeek.ico"
+    frames[-1].save(out, sizes=[(s, s) for s in sizes], append_images=frames[:-1])
+    print("wrote", out)
+
+
+def write_icns(icon: Image.Image):
+    out = ASSETS / "CardPeek.icns"
     with tempfile.TemporaryDirectory() as tmp:
         iconset = Path(tmp) / "CardPeek.iconset"
         iconset.mkdir()
         for size in (16, 32, 128, 256, 512):
             icon.resize((size, size), Image.LANCZOS).save(iconset / f"icon_{size}x{size}.png")
             icon.resize((size * 2, size * 2), Image.LANCZOS).save(iconset / f"icon_{size}x{size}@2x.png")
-        if len(sys.argv) > 1:
-            icon.save(sys.argv[1])
-        subprocess.run(["iconutil", "-c", "icns", str(iconset), "-o", str(OUT)], check=True)
-    print("wrote", OUT)
+        subprocess.run(["iconutil", "-c", "icns", str(iconset), "-o", str(out)], check=True)
+    print("wrote", out)
+
+
+def main():
+    icon = draw()
+    if len(sys.argv) > 1:
+        icon.save(sys.argv[1])
+    write_ico(icon)
+    if shutil.which("iconutil"):
+        write_icns(icon)
+    else:
+        print("skipped CardPeek.icns: needs macOS's iconutil")
 
 
 if __name__ == "__main__":

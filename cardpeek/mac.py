@@ -32,15 +32,12 @@ from Foundation import (
 from PyObjCTools import AppHelper
 
 from . import __version__
-from .core import APP_DIR, FROZEN, Controller, Scryfall, Settings, log, logger
+from .core import (APP_DIR, CARD_SIZES, FROZEN, HOVER_DELAYS, POPUP_SIZES, Controller, Scryfall, Settings,
+                   log, logger)
 
 ASSETS = Path(__file__).parent / "assets"
 MENU_ICON = "rectangle.portrait.on.rectangle.portrait.angled"  # SF Symbol: two fanned cards
 SCREEN_RECORDING_SETTINGS = "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
-
-CARD_SIZES = [0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0]
-POPUP_SIZES = [40, 50, 55, 65, 75, 85]
-HOVER_DELAYS = [(0.08, "Quick"), (0.12, "Normal"), (0.25, "Relaxed")]
 
 
 # --------------------------------------------------------------------------- system
