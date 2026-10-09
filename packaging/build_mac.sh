@@ -36,7 +36,16 @@ echo "==> Making $DMG"
 rm -rf build/dmg && mkdir -p build/dmg
 cp -R "$APP" build/dmg/
 ln -s /Applications build/dmg/Applications
-hdiutil create -quiet -volname "Card Peek" -srcfolder build/dmg -fs APFS -format ULMO -ov "$DMG"
+# hdiutil now and then fails on a busy CI machine ("Resource busy"), so give it a few goes.
+for attempt in 1 2 3; do
+    if hdiutil create -volname "Card Peek" -srcfolder build/dmg -fs APFS -format ULMO -ov "$DMG" > build/dmg.log 2>&1; then
+        break
+    fi
+    cat build/dmg.log
+    [ "$attempt" -lt 3 ] || exit 1
+    echo "==> hdiutil failed; trying again"
+    sleep 15
+done
 if [ "$IDENTITY" != "-" ]; then
     codesign --force --sign "$IDENTITY" --timestamp "$DMG"
 fi
