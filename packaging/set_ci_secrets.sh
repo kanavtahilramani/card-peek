@@ -12,6 +12,7 @@ set -euo pipefail
 [ $# -eq 4 ] || { sed -n '2,12p' "$0"; exit 1; }
 P12="$1" P8="$2" KEY_ID="$3" ISSUER="$4"
 
+[ -t 0 ] || { echo "Run this in a terminal: it asks for the .p12 password."; exit 1; }
 read -rsp "Password of $P12: " P12_PASSWORD; echo
 openssl pkcs12 -in "$P12" -passin "pass:$P12_PASSWORD" -nokeys -legacy 2>/dev/null | grep -q "Developer ID Application" \
     || openssl pkcs12 -in "$P12" -passin "pass:$P12_PASSWORD" -nokeys 2>/dev/null | grep -q "Developer ID Application" \
