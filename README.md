@@ -71,7 +71,7 @@ GitHub Actions (`.github/workflows/macos.yml`) builds and self-tests every push 
 | `MACOS_CERT_P12`, `MACOS_CERT_PASSWORD` | Developer ID Application certificate and private key (base64 .p12) and its password |
 | `NOTARY_KEY_P8`, `NOTARY_KEY_ID`, `NOTARY_ISSUER` | App Store Connect API key (base64 .p8), its key ID and issuer ID |
 
-To release: bump `__version__` in `cardpeek/__init__.py`, commit, then `git tag v<version> && git push --tags`.
+To release: bump `__version__` in `cardpeek/__init__.py` and commit, then `git tag -a v<version> -m "Card Peek <version>" && git push origin main v<version>`. The release appears on the Releases page about 5 minutes later. The steps are also in `CLAUDE.md`.
 
 App icon: `python packaging/make_icon.py` redraws `cardpeek/assets/CardPeek.icns`.
 
