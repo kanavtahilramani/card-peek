@@ -245,20 +245,47 @@ def pick_card(lines, matcher: NameMatcher, cx: float, cy: float, card_w: float):
     on the distance penalties.
     """
     best = None
-    for i, (box, text, _conf) in enumerate(lines):
-        offsets = name_offsets(box, cx, cy, card_w)
-        if offsets is None:
+    for i, (box, text, _conf, xs) in enumerate(lines):
+        if name_offsets(box, cx, cy, card_w) is None:
             continue
         m = matcher.match(text)
         if not m:
             continue
         name, score = m
+        box = name_box(box, text, xs, name)
+        offsets = name_offsets(box, cx, cy, card_w)
+        if offsets is None:
+            continue
         dx, dy = offsets
         w = line_card_w(box, card_w)
         total = score - 30 * dx / w - 12 * max(dy, 0.0) / w - (8 if dy < 0 else 0)
         if best is None or total > best.total:
             best = Hit(name, text, score, total, box, i)
     return best
+
+
+def name_box(box, text: str, xs, name: str):
+    """The part of a text line's `box` that the card name takes up.
+
+    The detector sometimes runs a name together with whatever sits next to it, most
+    often the mana cost at the top right of the card to its left: "3Twisted Fates".
+    That line starts on the neighbouring card, which would make the pointer look like it
+    is on this one, so cut the box down to where the name is in the text. `xs` is where
+    OCR read each character of `text` (None for spaces); without it, characters are
+    taken to be equally wide, which underestimates gaps.
+    """
+    t = text.lower()
+    a = max((fuzz.partial_ratio_alignment(face.strip().lower(), t) for face in name.split("//")),
+            key=lambda a: a.score)
+    if a.score < 80 or (a.dest_start == 0 and a.dest_end >= len(t)):
+        return box
+    x0, y0, x1, y1 = box
+    at = [x for x in (xs or [])[a.dest_start:a.dest_end] if x is not None]
+    if len(at) >= 2:
+        half_char = 0.5 * (at[-1] - at[0]) / (len(at) - 1)
+        return at[0] - half_char, y0, at[-1] + half_char, y1
+    per_char = (x1 - x0) / len(t)
+    return x0 + a.dest_start * per_char, y0, x0 + a.dest_end * per_char, y1
 
 
 def line_card_w(box, card_w: float) -> float:
@@ -283,10 +310,12 @@ def name_offsets(box, cx: float, cy: float, card_w: float):
         return None
     left = x0 - 0.08 * w
     right = max(x1, x0 + 0.93 * w)
-    dx = max(left - cx, 0.0, cx - right)
-    if dx > 0.2 * w:  # off the side of the card
+    # A name starts right at its card's left edge, so a pointer much to its left is on
+    # another card. Where the card ends depends on the guessed card width, so allow more
+    # slack on the right.
+    if cx < left - 0.05 * w or cx > right + 0.2 * w:
         return None
-    return dx, dy
+    return max(left - cx, 0.0, cx - right), dy
 
 
 def card_rect(box, card_w: float):
@@ -370,8 +399,10 @@ class OCR:
 
     def __init__(self):
         from rapidocr import RapidOCR
+        # Word boxes: where along the line each character was read (see read()).
         self.engine = RapidOCR(params={**self.PARAMS, "Det.model_path": str(model_path("det")),
-                                       "Rec.model_path": str(model_path("rec"))})
+                                       "Rec.model_path": str(model_path("rec")),
+                                       "Global.return_word_box": True})
         self.pool = ThreadPoolExecutor(4)
         self.careful = None
 
@@ -391,7 +422,9 @@ class OCR:
     TEXT_SCORE = 0.5  # RapidOCR's own cutoff for keeping a line
 
     def read(self, img: Image.Image, wanted=None, careful: bool = False):
-        """Return [((x0, y0, x1, y1), text, confidence), ...] in `img` pixel coordinates.
+        """Return [((x0, y0, x1, y1), text, confidence, xs), ...] in `img` pixel
+        coordinates, where xs is the x of each character of text (None for spaces), or
+        None if unknown.
 
         Reading text is the slow part, so if `wanted(box)` is given, only the lines it
         returns a box for are read, from that box (which can be wider than the line the
@@ -402,12 +435,12 @@ class OCR:
         if wanted is None:
             out = self.engine(bgr, use_det=True, use_cls=False, use_rec=True)
             boxes = out.boxes if out.boxes is not None else []
-            return [(self._bounds(box), str(text), float(conf))
+            return [(self._bounds(box), str(text), float(conf), None)
                     for box, text, conf in zip(boxes, out.txts or (), out.scores or ())]
 
         detector = self.careful if careful and self.careful else self.engine
         det = detector(bgr, use_det=True, use_cls=False, use_rec=False)
-        lines, crops, slots = [], [], []
+        lines, crops, slots, lefts = [], [], [], []
         for box in det.boxes if det.boxes is not None else []:
             bounds = self._bounds(box)
             region = wanted(bounds)
@@ -417,15 +450,28 @@ class OCR:
                 if crop.size:
                     slots.append(len(lines))
                     crops.append(np.ascontiguousarray(crop))
-            lines.append((bounds, "", 0.0))
+                    lefts.append(max(int(x0), 0))
+            lines.append((bounds, "", 0.0, None))
         # Lines are tiny, so one at a time leaves most cores idle. Read several at once.
-        for i, out in zip(slots, self.pool.map(self._recognize, crops)):
+        for i, crop, left, out in zip(slots, crops, lefts, self.pool.map(self._recognize, crops)):
             if out.txts and out.scores[0] >= self.TEXT_SCORE:
-                lines[i] = (lines[i][0], str(out.txts[0]), float(out.scores[0]))
+                text = str(out.txts[0])
+                xs = self._char_xs(text, out.word_results[0], left, crop.shape[1])
+                lines[i] = (lines[i][0], text, float(out.scores[0]), xs)
         return lines
 
     def _recognize(self, crop):
         return self.engine.recognize_txt([crop])
+
+    @staticmethod
+    def _char_xs(text: str, words, left: float, width: float):
+        """Where each character of `text` was read: the recognizer's column for it,
+        scaled to the crop it read. None for spaces, or for all of them if unknown."""
+        cols = [c for word in getattr(words, "word_cols", None) or () for c in word]
+        if not getattr(words, "line_txt_len", 0) or len(cols) != sum(not c.isspace() for c in text):
+            return None
+        per_col, it = width / words.line_txt_len, iter(cols)
+        return [None if c.isspace() else left + (next(it) + 0.5) * per_col for c in text]
 
     @staticmethod
     def _bounds(box):
@@ -768,7 +814,7 @@ class Worker(threading.Thread):
             img2, lines2, hit = self._read(job, deck, min(1.5 * f, 4.0), near, careful=True)
             if hit or not lines:
                 img, lines = img2, lines2
-        result = Result(job, [t for _, t, _ in lines], hit)
+        result = Result(job, [line[1] for line in lines], hit)
         if job.debug:
             self.save_debug(img, lines, hit)
         if hit:
@@ -794,6 +840,9 @@ class Worker(threading.Thread):
             x0, y0, x1, y1 = box
             return ox + x0 * k, oy + y0 * k, ox + x1 * k, oy + y1 * k
 
+        def xs_to_screen(xs):
+            return xs and [None if x is None else ox + x * k for x in xs]
+
         def region(box):
             """Only read the lines that could be the name of the card under the pointer.
             On small cards the detector often stops partway through a name ("Way of the
@@ -807,7 +856,7 @@ class Worker(threading.Thread):
             return x0, y0 - 0.15 * h, max(x1, x0 + min(10 * h, 0.95 * card_w_ocr)), y1 + 0.15 * h
 
         lines = self.ocr.read(img, region, careful)
-        on_screen = [(to_screen(box), t, c) for box, t, c in lines]
+        on_screen = [(to_screen(box), t, c, xs_to_screen(xs)) for box, t, c, xs in lines]
         return img, lines, pick_card(on_screen, deck.matcher, job.cursor[0], job.cursor[1], job.card_w)
 
     def moved_on(self, job: Job) -> bool:
@@ -820,13 +869,13 @@ class Worker(threading.Thread):
         folder.mkdir(parents=True, exist_ok=True)
         shot = img.copy()
         draw = ImageDraw.Draw(shot)
-        for i, (box, text, conf) in enumerate(lines):
+        for i, (box, *_) in enumerate(lines):
             chosen = hit is not None and i == hit.index
             draw.rectangle(box, outline="#00e676" if chosen else "#ff9100", width=3 if chosen else 1)
         stamp = time.strftime("%Y%m%d-%H%M%S") + f"-{int(time.time() * 1000) % 1000:03d}"
         shot.save(folder / f"{stamp}.png")
         (folder / f"{stamp}.json").write_text(json.dumps({
-            "lines": [{"box": box, "text": text, "confidence": conf} for box, text, conf in lines],
+            "lines": [{"box": box, "text": text, "confidence": conf} for box, text, conf, _ in lines],
             "picked": hit.name if hit else None,
         }, indent=1), "utf-8")
         for old in sorted(folder.glob("*.png"))[:-100]:  # keep the last 100

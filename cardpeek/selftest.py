@@ -11,7 +11,7 @@ import time
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from .core import (CARD_WIDTH_FRACTION, NAME_HEIGHT_FRACTION, Deck, Job, NameMatcher, OCR, SetInfo,
-                   Worker, fetch_models, grab_region, log)
+                   Worker, fetch_models, grab_region, log, pick_card)
 
 NAMES = ["Serra Angel", "Llanowar Elves", "Way of the Healer", "Way of the Warlord", "Pacifism",
          "Shivan Dragon", "Counterspell", "Giant Growth", "Lightning Strike", "Mind Rot",
@@ -45,6 +45,7 @@ def draw_board() -> Image.Image:
         draw.rectangle((x0 + 0.07 * w, y0 + 0.16 * w, x0 + 0.93 * w, y0 + 0.75 * w), fill="#5a6e8c")
         font = ImageFont.load_default(size=max(6, round(NAME_HEIGHT_FRACTION * w / 0.72)))
         draw.text((x0 + 0.08 * w, y0 + 0.09 * w), name, font=font, fill="black", anchor="lm")
+        draw.text((x0 + 0.86 * w, y0 + 0.09 * w), "3", font=font, fill="black", anchor="lm")  # mana cost
     # What a stream does to it: softened, then JPEG-compressed.
     img = img.filter(ImageFilter.GaussianBlur(1.1))
     buf = io.BytesIO()
@@ -73,9 +74,10 @@ def run() -> int:
     screen = draw_board()
     area = (0, 0, *SCREEN)
     full_w = CARD_WIDTH_FRACTION * SCREEN[0]
-    for name, left, top, scale in BOARD:
+    # Resting on the card's art, then near its right edge, next to the neighbour's name.
+    for (name, left, top, scale), along in [(card, along) for card in BOARD for along in (0.5, 0.88)]:
         w = full_w * scale
-        x, y = left + 0.5 * w, top + 0.6 * w  # resting on the card's art
+        x, y = left + along * w, top + 0.6 * w
         card_w, half, r = grab_region(x, y, area)
         img = screen.crop((r["left"] * PPU, r["top"] * PPU, (r["left"] + r["width"]) * PPU,
                            (r["top"] + r["height"]) * PPU))
@@ -86,12 +88,21 @@ def run() -> int:
         log(f'{"ok  " if ok else "FAIL"} {want:<32} read {res.hit.text if res.hit else res.texts!r} '
             f'in {res.seconds:.2f}s')
         if not ok:
-            problems.append(f"{want}: got {got}")
+            problems.append(f"{want} at {along:.0%} across: got {got}")
+
+    # From a real stream: resting on the right of Extended Absence's art, the detector ran
+    # its mana cost into the next card's name, giving a line that starts on this card.
+    xs = [640.0] + [676.0 + 4.0 * i for i in range(13)]
+    lines = [((547, 543, 612, 553), "Extended Absence", 0.9, None),
+             ((636, 543, 730, 553), "3Twisted Fates", 0.9, xs)]
+    hit = pick_card(lines, NameMatcher(["Extended Absence", "Twisted Fates"]), 628, 620, 142)
+    if not hit or hit.name != "Extended Absence":
+        problems.append(f"a name run into the next card's mana cost: got {hit and hit.name}")
 
     # The small-card detector only runs when the default one misses, which this board
     # may not provoke, so check it reads the board on its own too.
     lines = ocr.read(screen.crop((0, 400, 2000, 1400)), lambda box: box, careful=True)
-    if ocr.careful and not any(t for _, t, _ in lines):
+    if ocr.careful and not any(line[1] for line in lines):
         problems.append("the careful detector found no text")
 
     for p in problems:
