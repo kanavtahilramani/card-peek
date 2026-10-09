@@ -271,8 +271,19 @@ def pick_card(lines, matcher: NameMatcher, cx: float, cy: float, card_w: float):
     so the right name is just above the pointer and horizontally within one card width
     of the name's start. Neighbouring cards' names show up in the grab too; they lose
     on the distance penalties.
+
+    Cards also overlap, each one covering the bottom of the one before: a column of the
+    deck view shows little more than the name of every card but the last, and the game
+    stacks lands and tucks auras behind their creature the same way. So where names sit
+    one above another over the pointer, it's on the card whose name it is on or last
+    passed: names above that one belong to cards it covers, and names below it to cards
+    that start below the pointer. Likewise, in a row of cards, the pointer is on a card
+    that starts between it and a name further left: that name's card ends there or, as
+    in the hand, is covered by this one. Match scores and distances can't settle this,
+    as the rows are close together, card widths judged from name heights are rough, and
+    OCR reads some names better than others.
     """
-    best = None
+    hits = []
     for i, (box, text, _conf, xs) in enumerate(lines):
         if name_offsets(box, cx, cy, card_w) is None:
             continue
@@ -287,9 +298,40 @@ def pick_card(lines, matcher: NameMatcher, cx: float, cy: float, card_w: float):
         dx, dy = offsets
         w = line_card_w(box, card_w)
         total = score - 30 * dx / w - 12 * max(dy, 0.0) / w - (8 if dy < 0 else 0)
-        if best is None or total > best.total:
-            best = Hit(name, text, score, total, box, i)
-    return best
+        hits.append(Hit(name, text, score, total, box, i))
+
+    def in_front(a, b):
+        """Whether a, not b, is the card under the pointer, as their cards meet there."""
+        if a.name == b.name:
+            return False
+        w = line_card_w(a.box, card_w)
+        a_mid, b_mid = (a.box[1] + a.box[3]) / 2, (b.box[1] + b.box[3]) / 2
+        if abs(a.box[0] - b.box[0]) > 0.1 * card_w:
+            # Side by side, in a row or the hand: does a's card start in between?
+            same_row = abs(a_mid - b_mid) < min(a.box[3] - a.box[1], b.box[3] - b.box[1])
+            return same_row and b.box[0] < a.box[0] and cx >= a.box[0] - 0.08 * w and cy >= top_edge(a.box)
+        # Stacked: one name above the other, both starting at the same x.
+        if a_mid >= b.box[3]:  # a is the lower one
+            return cy >= top_edge(a.box, b.box)
+        if b_mid >= a.box[3] and b_mid - a_mid < w:  # b is, and close enough to overlap a
+            return cy < top_edge(b.box, a.box)
+        return False
+
+    left = [a for a in hits if not any(in_front(b, a) for b in hits)]
+    return max(left, key=lambda h: h.total, default=None)
+
+
+def top_edge(box, above=None):
+    """Roughly where the top of the card whose name is at `box` is: a name's height above
+    its middle, but if there's a name just `above` it, no more than 40% of the way to that
+    one, as in the deck view, where cards are stacked as tightly as their name bars allow.
+    Middles rather than edges, as the detector sometimes runs a name into something taller
+    next to it, such as the "x2" on a card in the next column."""
+    mid = (box[1] + box[3]) / 2
+    up = box[3] - box[1]
+    if above is not None:
+        up = min(up, 0.4 * (mid - (above[1] + above[3]) / 2))
+    return mid - up
 
 
 def name_box(box, text: str, xs, name: str):
@@ -300,20 +342,26 @@ def name_box(box, text: str, xs, name: str):
     That line starts on the neighbouring card, which would make the pointer look like it
     is on this one, so cut the box down to where the name is in the text. `xs` is where
     OCR read each character of `text` (None for spaces); without it, characters are
-    taken to be equally wide, which underestimates gaps.
+    taken to be equally wide, which underestimates gaps. The text can also come from
+    past the end of the box (see OCR.read), as when the detector only found the mana
+    cost before a name, so `xs` places even a line that's all name.
     """
     t = text.lower()
     a = max((fuzz.partial_ratio_alignment(face.strip().lower(), t) for face in name.split("//")),
             key=lambda a: a.score)
-    if a.score < 80 or (a.dest_start == 0 and a.dest_end >= len(t)):
+    # A read cut short ("3Llanowa") aligns as a whole, so also skip to its first letter.
+    start = max(a.dest_start, next((i for i, c in enumerate(t) if c.isalpha()), 0))
+    if a.score < 80 or start >= a.dest_end:
         return box
     x0, y0, x1, y1 = box
-    at = [x for x in (xs or [])[a.dest_start:a.dest_end] if x is not None]
+    at = [x for x in (xs or [])[start:a.dest_end] if x is not None]
     if len(at) >= 2:
         half_char = 0.5 * (at[-1] - at[0]) / (len(at) - 1)
         return at[0] - half_char, y0, at[-1] + half_char, y1
+    if start == 0 and a.dest_end >= len(t):
+        return box
     per_char = (x1 - x0) / len(t)
-    return x0 + a.dest_start * per_char, y0, x0 + a.dest_end * per_char, y1
+    return x0 + start * per_char, y0, x0 + a.dest_end * per_char, y1
 
 
 def line_card_w(box, card_w: float) -> float:
@@ -330,11 +378,12 @@ def line_card_w(box, card_w: float) -> float:
 def name_offsets(box, cx: float, cy: float, card_w: float):
     """How far a text line at `box` is from where the pointer's card name could be:
     (dx, dy) in screen coordinates, or None if it can't be that card's name at all.
-    dy is positive when the line is above the pointer."""
+    dy is how far the pointer is below the line: 0 while it's on the line, negative
+    when it's above it."""
     x0, y0, x1, y1 = box
     w = line_card_w(box, card_w)
-    dy = cy - (y0 + y1) / 2
-    if dy < -0.25 * w or dy > 1.45 * w:  # below the name, or above the whole card
+    mid = (y0 + y1) / 2
+    if cy < mid - 0.25 * w or cy > mid + 1.45 * w:  # below the name, or above the whole card
         return None
     left = x0 - 0.08 * w
     right = max(x1, x0 + 0.93 * w)
@@ -343,7 +392,7 @@ def name_offsets(box, cx: float, cy: float, card_w: float):
     # slack on the right.
     if cx < left - 0.05 * w or cx > right + 0.2 * w:
         return None
-    return max(left - cx, 0.0, cx - right), dy
+    return max(left - cx, 0.0, cx - right), max(cy - y1, 0.0) + min(cy - y0, 0.0)
 
 
 def card_rect(box, card_w: float):

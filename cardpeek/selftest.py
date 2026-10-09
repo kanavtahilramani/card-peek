@@ -1,8 +1,8 @@
 """An end-to-end check that needs no screen, no Scryfall and no real cards: draw a
-made-up MTG Arena board, blur it like a video stream, and run lookups on it through the
-same OCR and name matching the app uses. CI runs it on the packaged app, which catches
-missing libraries or models that a plain import wouldn't. On Windows it also puts the
-tray app's UI through its paces (see win.self_test).
+made-up MTG Arena board and a column of the deck view, blur them like a video stream,
+and run lookups on them through the same OCR and name matching the app uses. CI runs it
+on the packaged app, which catches missing libraries or models that a plain import
+wouldn't. On Windows it also puts the tray app's UI through its paces (see win.self_test).
 """
 from __future__ import annotations
 
@@ -27,6 +27,11 @@ BOARD = [("Serra Angel", 380, 560, 1.0), ("Way of the Warlord", 540, 560, 1.0),
          ("Brazen Borrower", 700, 560, 1.0), ("Llanowar Elves", 860, 560, 1.0),
          ("Pacifism", 560, 250, 0.62), ("Shivan Dragon", 660, 250, 0.62)]
 
+# A column of the deck view, (left, top, names): each card covers all of the one before
+# but its top STACK of a card width, which shows its name.
+COLUMN = (100, 200, ["Counterspell", "Giant Growth", "Lightning Strike", "Mind Rot", "Academic Ascent"])
+STACK = 0.16
+
 
 class _Images:
     """Stands in for Scryfall: every card is a grey rectangle."""
@@ -38,7 +43,9 @@ def draw_board() -> Image.Image:
     full_w = CARD_WIDTH_FRACTION * SCREEN[0]
     img = Image.new("RGB", (SCREEN[0] * PPU, SCREEN[1] * PPU), "#1d2a24")
     draw = ImageDraw.Draw(img)
-    for name, left, top, scale in BOARD:
+    column_left, column_top, column = COLUMN
+    cards = BOARD + [(name, column_left, column_top + i * STACK * full_w, 1.0) for i, name in enumerate(column)]
+    for name, left, top, scale in cards:
         w = full_w * scale * PPU
         x0, y0 = left * PPU, top * PPU
         draw.rounded_rectangle((x0, y0, x0 + w, y0 + 1.4 * w), radius=0.05 * w, fill="#111")
@@ -76,9 +83,16 @@ def run() -> int:
     area = (0, 0, *SCREEN)
     full_w = CARD_WIDTH_FRACTION * SCREEN[0]
     # Resting on the card's art, then near its right edge, next to the neighbour's name.
-    for (name, left, top, scale), along in [(card, along) for card in BOARD for along in (0.5, 0.88)]:
-        w = full_w * scale
-        x, y = left + along * w, top + 0.6 * w
+    points = [(name, left + along * full_w * scale, top + 0.6 * full_w * scale, f"at {along:.0%} across")
+              for name, left, top, scale in BOARD for along in (0.5, 0.88)]
+    # Down the deck view's column: on the top half of each name, where the name above is
+    # nearer than the middle of the name the pointer is on, then on the strip below it.
+    left, top, column = COLUMN
+    for i, name in enumerate(column):
+        y = top + i * STACK * full_w
+        points += [(name, left + 0.5 * full_w, y + 0.07 * full_w, "on its name"),
+                   (name, left + 0.5 * full_w, y + (0.145 if i < len(column) - 1 else 0.6) * full_w, "below its name")]
+    for name, x, y, where in points:
         card_w, half, r = grab_region(x, y, area)
         img = screen.crop((r["left"] * PPU, r["top"] * PPU, (r["left"] + r["width"]) * PPU,
                            (r["top"] + r["height"]) * PPU))
@@ -89,7 +103,7 @@ def run() -> int:
         log(f'{"ok  " if ok else "FAIL"} {want:<32} read {res.hit.text if res.hit else res.texts!r} '
             f'in {res.seconds:.2f}s')
         if not ok:
-            problems.append(f"{want} at {along:.0%} across: got {got}")
+            problems.append(f"{want} {where}: got {got}")
 
     # From a real stream: resting on the right of Extended Absence's art, the detector ran
     # its mana cost into the next card's name, giving a line that starts on this card.
@@ -99,6 +113,19 @@ def run() -> int:
     hit = pick_card(lines, NameMatcher(["Extended Absence", "Twisted Fates"]), 628, 620, 142)
     if not hit or hit.name != "Extended Absence":
         problems.append(f"a name run into the next card's mana cost: got {hit and hit.name}")
+
+    # From a real stream: a column of the deck view, with the last name run into the "x2"
+    # on a card in the next column, which makes its line much taller than it is.
+    names = ["Semester Foreseer", "Rewrite Regrets", "Heartstring Puller", "Denzilore Fatehold"]
+    lines = [((834, 781, 940, 796), "Semester Foreseer", 0.9, None),
+             ((835, 814, 926, 829), "Rewrite Regrets3", 0.9, None),
+             ((835, 846, 938, 861), "Heartstring Puller", 0.9, None),
+             ((821, 864, 1028, 897), "x2DenziloreFathold1", 0.9, None)]
+    for y, want in [(803, "Semester Foreseer"), (818, "Rewrite Regrets"), (838, "Rewrite Regrets"),
+                    (850, "Heartstring Puller"), (866, "Heartstring Puller"), (885, "Denzilore Fatehold")]:
+        hit = pick_card(lines, NameMatcher(names), 923, y, 240)
+        if not hit or hit.name != want:
+            problems.append(f"the deck view's column at y={y}: got {hit and hit.name}, expected {want}")
 
     # The small-card detector only runs when the default one misses, which this board
     # may not provoke, so check it reads the board on its own too.
